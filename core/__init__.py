@@ -7,18 +7,11 @@ del dotenv
 gc.collect()
 
 from core import core
-
 from core.core import (
-    ping_command,
     arc_client,
     bot,
-    client,
+    handle_ping_command,
+    httpx_client,
 )
 
-__all__ = [
-    "arc_client",
-    "bot",
-    "client",
-    "core",
-    "ping_command",
-]
+__all__ = ["arc_client", "bot", "core", "handle_ping_command", "httpx_client"]
