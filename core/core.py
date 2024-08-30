@@ -73,7 +73,7 @@ async def ping_host(
         )
 
         if not response.text:
-            logger.exception(f"Received an empty response from the server: {e}")
+            logger.exception(f"Received an empty response from the server: {response}")
             return await ctx.respond(
                 "Error: Received an empty response from the server.",
             )

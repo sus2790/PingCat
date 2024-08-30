@@ -3,7 +3,6 @@ import dotenv
 dotenv.load_dotenv()
 
 from core import core
-
 from core.core import (
     arc_client,
     bot,
