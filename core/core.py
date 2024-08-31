@@ -1,12 +1,17 @@
-import ipaddress
+import asyncio
 import logging
 import os
 import socket
+import sys
 
+import aiodns
 import arc
 import hikari
 import httpx
 import validators
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 bot = hikari.GatewayBot(os.environ["TOKEN"])
 arc_client = arc.GatewayClient(bot)
@@ -20,34 +25,22 @@ hosts = [
 ]
 
 
-def domain_to_ip(
-    domain: str,
-):
-    try:
-        ip_address: str = socket.gethostbyname(domain)
-        ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address = ipaddress.ip_address(
-            ip_address,
-        )
-        if isinstance(ip_obj, ipaddress.IPv4Address):
-            return "ipv4", ip_address
+async def identify_ip(ip_address: str):
+    resolver = aiodns.DNSResolver()
+    if validators.ip_address._check_private_ip(ip_address, is_private=True):
+        return "private", ip_address
+
+    if validators.ipv4(ip_address):
+        return "ipv4", ip_address
+
+    if validators.ipv6(ip_address):
         return "ipv6", ip_address
-    except socket.gaierror:
-        logger.exception("Failed to resolve domain")
-        return "invalid", domain
-    except ValueError:
-        logger.exception("Invalid IP address")
-        return "invalid", domain
 
+    if validators.domain(ip_address):
+        result = await resolver.gethostbyname(ip_address, socket.AF_INET)
+        return "ipv4", result.addresses[0]
 
-def identify_ip(input_str: str):
-    if validators.ipv4(input_str):
-        return "ipv4", input_str
-    if validators.ipv6(input_str):
-        return "ipv6", input_str
-    if validators.domain(input_str):
-        ip = domain_to_ip(input_str)
-        return "domain", ip
-    return "invalid", input_str
+    return "invalid", ip_address
 
 
 async def ping_host(
@@ -58,41 +51,47 @@ async def ping_host(
     ip_version: str,
     host: str,
 ) -> arc.InteractionResponse:
-    data: dict[str, str] = {
+    data = {
         "target_ip": target,
         "ip_version": ip_version,
+        "api_key": api_key,
     }
-    if not api_key:
-        data.update({"api_key": ""})
 
-    try:
-        response: httpx.Response = await httpx_client.post(url, json=data)
-        response.raise_for_status()
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(url, json=data)
+            response.raise_for_status()
+        except httpx.TimeoutException as e:
+            logger.exception(f"Failed to get response from server: {e}")
+            return await ctx.respond(
+                "Error: Timeout while attempting to ping the IP address. Please check if the entered IP address is correct.",
+            )
+        except Exception as e:
+            logger.exception(f"Failed to parse JSON response: {e} | Payload: {data}")
+            return await ctx.respond(
+                f"Error: Unable to parse JSON response. Raw response:\n```\n{response.text}\n```",
+            )
+
         logger.debug(
             f"{'=' * 30}\nStatus Code: {response.status_code}\nResponse Content: {response.text}\n{'=' * 30}\n",
         )
 
-        if not response.text:
-            logger.exception(f"Received an empty response from the server: {response}")
+        json_response = response.json()
+
+        if not json_response:
+            logger.exception("Received an empty response from the server.")
             return await ctx.respond(
                 "Error: Received an empty response from the server.",
             )
 
-        json_response = response.json()
-        formatted_response = (
-            f"Ping result from `{host}`\n```\n{json_response.get('output')}\n```"
-        )
-        return await ctx.respond(formatted_response)
-    except httpx.TimeoutException as e:
-        logger.exception(f"Failed to get response from server: {e}")
-        return await ctx.respond(
-            "Timeout while attempting to ping the IP address. Please check if the entered IP address is correct.",
-        )
-    except Exception as e:
-        logger.exception(f"Failed to parse JSON response: {e}")
-        return await ctx.respond(
-            f"Error: Unable to parse JSON response. Raw response:\n```\n{response.text}\n```",
-        )
+        if json_response.get("success"):
+            formatted_response = (
+                f"Ping result from `{host}`\n```\n{json_response.get('output')}\n```"
+            )
+            return await ctx.respond(formatted_response)
+
+        logger.warning(f"Ping failed with output: {json_response.get('output')}")
+        return await ctx.respond(json_response.get("output", "Unknown error occurred."))
 
 
 @arc_client.include
@@ -108,24 +107,26 @@ async def handle_ping_command(
         ),
     ],
 ) -> arc.InteractionResponse:
-    ip_version, detected_target = identify_ip(target)
+    ip_version, detected_target = await identify_ip(target)
 
     if ip_version == "invalid":
-        return await ctx.respond("Invalid IP address or domain name.")
+        return await ctx.respond(ctx, "Invalid IP address or domain name.")
 
-    try:
-        host_index = hosts.index(host)
-    except ValueError:
-        return await ctx.respond("Host not supported yet.")
+    if ip_version == "private":
+        return await ctx.respond(ctx, "Private IP addresses are not allowed.")
 
-    api_key = None
+    host_info = {
+        0: {"url": os.environ["IP1"], "api_key": os.environ["APIKEY1"]},
+        1: {"url": "https://api.cowgl.xyz/ping", "api_key": ""},
+        2: {"url": "https://pingapi.milkteamc.org/ping", "api_key": ""},
+    }
 
-    if host_index == 0:
-        url: str = os.environ["IP1"]
-        api_key: str = os.environ["APIKEY1"]
-    elif host_index == 1:
-        url = "https://api.cowgl.xyz/ping"
-    elif host_index == 2:
-        url = "https://pingapi.milkteamc.org/ping"
+    host_index = hosts.index(host)
+
+    if host_index not in host_info:
+        return await ctx.respond(ctx, "Host not supported yet.")
+
+    url = host_info[host_index]["url"]
+    api_key = host_info[host_index]["api_key"]
 
     return await ping_host(ctx, url, api_key, detected_target, ip_version, host)
