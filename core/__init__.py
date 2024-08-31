@@ -6,6 +6,7 @@ from core import core
 from core.core import (
     arc_client,
     bot,
+    domain_to_ip,
     handle_ping_command,
     hosts,
     httpx_client,
@@ -17,6 +18,7 @@ __all__ = [
     "arc_client",
     "bot",
     "core",
+    "domain_to_ip",
     "handle_ping_command",
     "hosts",
     "httpx_client",
